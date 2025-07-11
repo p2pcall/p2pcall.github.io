@@ -1,1 +1,73 @@
 
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Webcam 2D to 3D</title>
+  <style>
+    body { margin: 0; overflow: hidden; }
+    canvas { display: block; }
+    #video { display: none; }
+  </style>
+</head>
+<body>
+  <video id="video" autoplay playsinline></video>
+  <canvas id="canvas3d"></canvas>
+
+  <!-- TensorFlow & MediaPipe Depth Estimation -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.16.0"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/depth-estimation"></script>
+
+  <!-- Three.js for 3D rendering -->
+  <script src="https://cdn.jsdelivr.net/npm/three@0.157.0/build/three.min.js"></script>
+
+  <script>
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas3d');
+
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
+    const renderer = new THREE.WebGLRenderer({ canvas });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+
+    const geometry = new THREE.PlaneGeometry(1, 1, 64, 64);
+    const material = new THREE.MeshBasicMaterial({ color: 0xffffff, wireframe: true });
+    const mesh = new THREE.Mesh(geometry, material);
+    scene.add(mesh);
+
+    camera.position.z = 2;
+
+    async function init() {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } });
+      video.srcObject = stream;
+
+      const model = await depthEstimation.load({
+        modelUrl: 'https://tfhub.dev/intel/midas/v2_1_small/1',
+        backend: 'webgl'
+      });
+
+      async function animate() {
+        if (video.readyState === video.HAVE_ENOUGH_DATA) {
+          const depthMap = await model.estimateDepth(video);
+
+          const depthData = depthMap.dataSync();
+          const vertices = geometry.attributes.position.array;
+
+          for (let i = 0; i < vertices.length; i += 3) {
+            const index = (i / 3) % depthData.length;
+            vertices[i + 2] = -depthData[index]; // update z based on depth
+          }
+
+          geometry.attributes.position.needsUpdate = true;
+        }
+
+        requestAnimationFrame(animate);
+        renderer.render(scene, camera);
+      }
+
+      animate();
+    }
+
+    init();
+  </script>
+</body>
+</html>
