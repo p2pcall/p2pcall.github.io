@@ -2,23 +2,33 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Webcam 2D to 3D with Depth</title>
+  <title>Webcam 2D to 3D on Button</title>
   <style>
-    html, body { margin: 0; overflow: hidden; }
+    body { margin: 0; background: #000; color: #0f0; font-family: monospace; }
+    #canvas3d { width: 100vw; height: 100vh; display: block; }
+    #controls {
+      position: absolute; top: 10px; left: 10px; z-index: 10;
+      background: rgba(0, 0, 0, 0.7); padding: 10px; border-radius: 5px;
+    }
     #log {
       position: absolute; bottom: 0; left: 0; right: 0;
-      background: #111; color: #0f0; font-size: 12px;
-      max-height: 100px; overflow-y: auto;
-      padding: 5px; font-family: monospace;
+      max-height: 120px; overflow-y: auto; background: #111;
+      color: #0f0; font-size: 12px; padding: 5px;
     }
   </style>
 </head>
 <body>
   <video id="video" autoplay playsinline style="display:none;"></video>
   <canvas id="canvas3d"></canvas>
+
+  <div id="controls">
+    <label for="cameraSelect">Select Camera:</label>
+    <select id="cameraSelect"></select>
+    <button id="startBtn">Start</button>
+  </div>
   <div id="log">[LOG]</div>
 
-  <!-- Dependencies -->
+  <!-- Libraries -->
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.16.0"></script>
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/depth-estimation"></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.157.0/build/three.min.js"></script>
@@ -26,83 +36,127 @@
 
   <script>
     const log = (msg) => {
-      document.getElementById('log').innerHTML = `[${new Date().toLocaleTimeString()}] ${msg}<br>` + document.getElementById('log').innerHTML;
+      const el = document.getElementById('log');
+      el.innerHTML = `[${new Date().toLocaleTimeString()}] ${msg}<br>` + el.innerHTML;
     };
 
-    const canvas = document.getElementById('canvas3d');
     const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas3d');
+    const cameraSelect = document.getElementById('cameraSelect');
+    const startBtn = document.getElementById('startBtn');
 
-    // 3D setup
-    const scene = new THREE.Scene();
-    const camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 100);
-    camera.position.z = 2;
+    let stream, model;
 
-    const renderer = new THREE.WebGLRenderer({ canvas });
-    renderer.setSize(window.innerWidth, window.innerHeight);
-
-    const controls = new THREE.OrbitControls(camera, renderer.domElement);
-
-    // 3D mesh
-    const size = 64;
-    const geometry = new THREE.PlaneGeometry(1.6, 1.2, size - 1, size - 1);
-    const colors = new Float32Array(geometry.attributes.position.count * 3);
-    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-    const material = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide });
-    const mesh = new THREE.Mesh(geometry, material);
-    scene.add(mesh);
-
-    async function main() {
+    async function listCameras() {
       try {
-        log("Getting webcam...");
-        const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 256, height: 192 } });
-        video.srcObject = stream;
-
-        log("Loading model...");
-        const model = await depthEstimation.DepthEstimation.create({ model: 'mediapipe_small' });
-        log("Model loaded.");
-
-        async function renderLoop() {
-          requestAnimationFrame(renderLoop);
-
-          if (video.readyState >= 2) {
-            const depth = await model.estimateDepth(video);
-            const data = depth.dataSync();
-
-            const pos = geometry.attributes.position.array;
-            const col = geometry.attributes.color.array;
-
-            for (let i = 0; i < pos.length; i += 3) {
-              const z = -data[i / 3] * 0.3;
-              pos[i + 2] = z;
-
-              const brightness = 1 - z;
-              col[i] = brightness;
-              col[i + 1] = brightness * 0.5;
-              col[i + 2] = 1 - brightness;
-            }
-
-            geometry.attributes.position.needsUpdate = true;
-            geometry.attributes.color.needsUpdate = true;
-          }
-
-          controls.update();
-          renderer.render(scene, camera);
-        }
-
-        renderLoop();
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const videoInputs = devices.filter(d => d.kind === 'videoinput');
+        cameraSelect.innerHTML = '';
+        videoInputs.forEach((device, index) => {
+          const option = document.createElement('option');
+          option.value = device.deviceId;
+          option.text = device.label || `Camera ${index + 1}`;
+          cameraSelect.appendChild(option);
+        });
+        log(`${videoInputs.length} camera(s) found`);
       } catch (err) {
-        log("ERROR: " + err.message);
-        console.error(err);
+        log("Error listing cameras: " + err.message);
       }
     }
 
-    window.addEventListener('resize', () => {
-      camera.aspect = window.innerWidth / window.innerHeight;
-      camera.updateProjectionMatrix();
-      renderer.setSize(window.innerWidth, window.innerHeight);
-    });
+    async function getStream(deviceId) {
+      if (stream) {
+        stream.getTracks().forEach(track => track.stop());
+      }
+      const constraints = {
+        video: {
+          deviceId: { exact: deviceId },
+          width: 256, height: 192
+        }
+      };
+      stream = await navigator.mediaDevices.getUserMedia(constraints);
+      video.srcObject = stream;
+      log("Camera stream started");
+    }
 
-    main();
+    async function init3D() {
+      const scene = new THREE.Scene();
+      const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 100);
+      camera.position.z = 2;
+
+      const renderer = new THREE.WebGLRenderer({ canvas });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+
+      const controls = new THREE.OrbitControls(camera, renderer.domElement);
+
+      const size = 64;
+      const geometry = new THREE.PlaneGeometry(1.6, 1.2, size - 1, size - 1);
+      const colors = new Float32Array(geometry.attributes.position.count * 3);
+      geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+      const material = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide });
+      const mesh = new THREE.Mesh(geometry, material);
+      scene.add(mesh);
+
+      if (!model) {
+        log("Loading depth model...");
+        model = await depthEstimation.DepthEstimation.create({ model: 'mediapipe_small' });
+        log("Depth model loaded");
+      }
+
+      async function render() {
+        requestAnimationFrame(render);
+        if (video.readyState >= 2) {
+          const depth = await model.estimateDepth(video);
+          const data = depth.dataSync();
+          const pos = geometry.attributes.position.array;
+          const col = geometry.attributes.color.array;
+
+          for (let i = 0; i < pos.length; i += 3) {
+            const z = -data[i / 3] * 0.3;
+            pos[i + 2] = z;
+            const bright = 1.0 - z;
+            col[i] = bright;
+            col[i + 1] = 0.5;
+            col[i + 2] = 1.0 - bright;
+          }
+
+          geometry.attributes.position.needsUpdate = true;
+          geometry.attributes.color.needsUpdate = true;
+        }
+
+        controls.update();
+        renderer.render(scene, camera);
+      }
+
+      render();
+    }
+
+    startBtn.onclick = async () => {
+      const deviceId = cameraSelect.value;
+      if (!deviceId) {
+        log("No camera selected");
+        return;
+      }
+
+      try {
+        await getStream(deviceId);
+        await init3D();
+      } catch (err) {
+        log("Error: " + err.message);
+        console.error(err);
+      }
+    };
+
+    // Init
+    navigator.mediaDevices.getUserMedia({ video: true })
+      .then(() => listCameras())
+      .catch(err => {
+        log("Permission denied or no camera found: " + err.message);
+      });
+
+    window.addEventListener('resize', () => {
+      location.reload(); // quick fix for canvas resizing
+    });
   </script>
 </body>
 </html>
